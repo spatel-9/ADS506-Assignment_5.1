@@ -1,0 +1,146 @@
+---
+title: "Australian Wine Static"
+format: html
+---
+
+```{r}
+library(fpp3)
+library(tidyverse)
+library(gt)
+```
+
+##Tab1 - Visualizations
+
+###Data import/preparation
+
+Inputs
+
+-   multiselect for Varietal
+-   Date range
+    -   First date is the Train date cutoff - default to 1 year
+    -   Second date is the end of the forecast horizon - default to last date
+
+```{r}
+
+aus_wine <- read_csv(here::here("C:/Users/patel/my-r-project/AustralianWines.csv"), na = "*",
+                     col_types = cols(Rose = col_number()),
+                     show_col_types = FALSE) |> 
+    fill(Rose, .direction = "down") |> 
+    mutate(Month = mdy(str_replace(Month, '-', '-01-')) |> yearmonth()) 
+```
+
+```{r}
+#Convert df to tsibble with index = Month and key = Varietal
+all_wine <-aus_wine |>
+ pivot_longer(
+ cols = c(Fortified, Red, Rose, sparkling,`Sweet white`, `Dry white`),
+ names_to= "Varietal",
+ values_to="Sales") |>
+ as_tsibble(index = Month, key = Varietal)
+ 
+ 
+```
+
+###Data Visualization
+
+```{r}
+
+all_wine |> 
+    autoplot(Sales) +
+    geom_vline(xintercept = as_date(train_cutoff), color = "red") +
+    labs(y = "Sales Volume", title = "Wine Sales Data") +
+    facet_wrap(~Varietal, ncol = 1) +
+    theme_minimal()
+```
+
+## Tab 2 - Model Building
+
+Inputs:
+
+-   Toggle for model specificatoin (default off)
+-   Toggle Training accuracy (default off)
+
+### Model fitting
+
+Build multiple models for the Varietal series using Auto ARIMA, ETS, and TSLM.
+
+```{r}
+#Train/Validation split
+train_cutoff <- yearmonth("1993 Dec")
+
+aw_trn <- all_wine |>
+ filter(Month <= train_cutoff)
+ 
+ aw_val <- all_wine |>
+ filter(Month > yearmonth("1993 Dec"))
+```
+
+```{r}
+#Model fits
+fit <- aw_trn |> 
+    model(
+    arima = ARIMA(Sales),
+    ets = ETS(Sales),
+    tslm = TSLM(Sales ~ trend() + season())
+    )
+
+fit
+```
+
+### Training accuracy
+
+```{r}
+#Training accuracy
+fit |> 
+    accuracy() |> 
+    select(Varietal, .model, RMSE, MAE, MAPE) |> 
+    arrange(Varietal, RMSE) |> 
+    gt()
+
+
+```
+
+### Forecast accuracy
+
+Inputs \*User provides forecast window (default 1 year)
+
+```{r}
+#Forecasting
+fc <- fit |> 
+    forecast(h = "1 year")
+
+fc |> 
+    accuracy(all_wine) |> 
+    select(Varietal, .model, RMSE, MAE, MAPE) |> 
+    arrange(Varietal, RMSE) |> 
+    gt()
+```
+
+## Tab3 - Forecast
+
+Inputs:
+
+-   Select the model for the Forecast table
+
+### Forecast visualization
+
+```{r}
+#Forecast visualization
+trn_start <- yearmonth(train_cutoff |>  as.Date() - years(1) )
+
+fc |> 
+    autoplot(all_wine |>  filter(Month >= trn_start)) +
+    geom_vline(xintercept = as_date(train_cutoff), color = "red", linetype = "dashed") +
+    labs(y = "Sales Volume", title = "Wine Sales Forecast") +
+    facet_wrap(Varietal ~ .model, ncol = 2) +
+    theme_minimal()
+```
+
+```{r}
+fc |> 
+  filter(.model == 'arima') |>
+  as_tibble() |>
+  select(Varietal, .model, Month, .mean) |>
+  pivot_wider(names_from = Month, values_from = .mean) |>
+  gt() |> fmt_number(decimals = 0)
+```
